@@ -1,42 +1,37 @@
 import asyncio
-from collections import OrderedDict
 from datetime import datetime
 import hashlib
-import html
 import json
 import logging
 import os
 import random
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
+from aiogram.types import BusinessConnection, Message
 from aiohttp import web
 
 logging.basicConfig(level=logging.INFO)
 
 # --- НАСТРОЙКИ ---
 TOKEN = "9234797737:AAFzTG64sZX3KgkdMfIENlIazl-nFpzSjtE"
-OWNER_ID = 7450045362
+OWNER_ID = 7450045362  # Твой Telegram ID
 TIMEZONE = ZoneInfo("Europe/Kyiv")
 DB_FILE = "morning_db.json"
 
-# Окно отправки: с 07:00 до 07:59
-START_HOUR = 7
+# Окно отправки (например, с 9:00 до 9:59 утра)
+START_HOUR = 9
 WINDOW_MINUTES = 60
 
+# Варианты сообщений (добавляй свои)
 PHRASES = [
     "доброе утро, как спалось?",
-    "утречко",
-    "доброе, как самочуствие?",
+    "утра, выспался?",
+    "доброе как ты??",
     "доброе утро) как ты?",
     "привет, доброе утро, как спалось?",
 ]
-
-# Кэш входящих сообщений для SaveMod (хранит последние 2000 сообщений)
-MAX_CACHE_SIZE = 2000
-msg_cache: OrderedDict[tuple[int, int], dict] = OrderedDict()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -63,112 +58,7 @@ def save_db(data: dict):
 db = load_db()
 
 
-def format_user_link(
-    user_id: int | None, name: str, username: str | None = None
-) -> str:
-    escaped_name = html.escape(name)
-    if username:
-        return f'<b><a href="https://t.me/{username}">{escaped_name}</a></b>'
-    if user_id:
-        return f'<b><a href="tg://user?id={user_id}">{escaped_name}</a></b>'
-    return f"<b>{escaped_name}</b>"
-
-
-def extract_media(message: Message) -> tuple[str | None, str | None]:
-    if message.photo:
-        return "photo", message.photo[-1].file_id
-    if message.video:
-        return "video", message.video.file_id
-    if message.voice:
-        return "voice", message.voice.file_id
-    if message.video_note:
-        return "video_note", message.video_note.file_id
-    if message.sticker:
-        return "sticker", message.sticker.file_id
-    if message.document:
-        return "document", message.document.file_id
-    if message.audio:
-        return "audio", message.audio.file_id
-    return None, None
-
-
-async def send_saved_media(
-    header: str, text: str, media_type: str | None, file_id: str | None
-):
-    if not media_type or not file_id:
-        await bot.send_message(
-            OWNER_ID,
-            f"{header}\n{text}",
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        return
-
-    caption = f"{header}\n{text}" if text else header
-
-    if media_type == "photo":
-        await bot.send_photo(
-            OWNER_ID, file_id, caption=caption, parse_mode="HTML"
-        )
-    elif media_type == "video":
-        await bot.send_video(
-            OWNER_ID, file_id, caption=caption, parse_mode="HTML"
-        )
-    elif media_type == "voice":
-        await bot.send_voice(
-            OWNER_ID, file_id, caption=caption, parse_mode="HTML"
-        )
-    elif media_type == "document":
-        await bot.send_document(
-            OWNER_ID, file_id, caption=caption, parse_mode="HTML"
-        )
-    elif media_type == "audio":
-        await bot.send_audio(
-            OWNER_ID, file_id, caption=caption, parse_mode="HTML"
-        )
-    elif media_type == "video_note":
-        await bot.send_message(
-            OWNER_ID,
-            header,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        await bot.send_video_note(OWNER_ID, file_id)
-    elif media_type == "sticker":
-        await bot.send_message(
-            OWNER_ID,
-            header,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        await bot.send_sticker(OWNER_ID, file_id)
-
-
-def cache_message(message: Message):
-    if not message.from_user or message.from_user.id == OWNER_ID:
-        return
-    if message.chat.type != "private":
-        return
-
-    media_type, file_id = extract_media(message)
-    text = message.text or message.caption or ""
-    if not text and not media_type:
-        return
-
-    key = (message.chat.id, message.message_id)
-    msg_cache[key] = {
-        "sender_id": message.from_user.id,
-        "sender_name": message.from_user.full_name or str(message.from_user.id),
-        "sender_username": message.from_user.username,
-        "text": text,
-        "media_type": media_type,
-        "file_id": file_id,
-    }
-    if len(msg_cache) > MAX_CACHE_SIZE:
-        msg_cache.popitem(last=False)
-
-
-# Подключение / отключение бизнес-бота
+# 1. Отслеживаем подключение/отключение бизнес-бота
 @dp.business_connection()
 async def on_business_connection(connection: BusinessConnection):
     if connection.user.id != OWNER_ID:
@@ -179,10 +69,11 @@ async def on_business_connection(connection: BusinessConnection):
         save_db(db)
         await bot.send_message(
             OWNER_ID,
-            "✅ Бизнес-бот подключён (рассылка + SaveMod + реплай на одноразовые)!\n\n"
-            "Команды в личных чатах:\n"
-            "• `/add` / `/del` — управление утренней рассылкой\n"
-            "• `.` или `/save` ответом на одноразовое медиа — сохранить без палева",
+            "✅ Бизнес-бот успешно подключён!\n\n"
+            "Заходи в личку к нужным людям и пиши:\n"
+            "• `/add` — добавить в утреннюю рассылку\n"
+            "• `/del` — убрать из рассылки\n\n"
+            "Команды сразу удалятся из чата, собеседник их не увидит.",
             parse_mode="Markdown",
         )
     else:
@@ -193,187 +84,111 @@ async def on_business_connection(connection: BusinessConnection):
         )
 
 
-# Обработка всех сообщений в личных чатах
+# 2. Ловим твои секретные команды /add и /del прямо в личных чатах
 @dp.business_message()
 async def on_business_message(message: Message):
-    if message.chat.type != "private":
-        return
-
-    # 1. Входящее сообщение от собеседника -> в кэш SaveMod
-    if message.from_user and message.from_user.id != OWNER_ID:
-        cache_message(message)
-        return
-
-    # 2. Твои исходящие сообщения
+    # Реагируем только на твои собственные сообщения
     if not message.from_user or message.from_user.id != OWNER_ID:
         return
 
+    text = (message.text or "").strip()
+    text_lower = text.lower()
+
+    # --- .spam <количество> <текст> ---
+    if text_lower.startswith(".spam "):
+        parts = text.split(" ", 2)
+        if len(parts) < 3:
+            await bot.send_message(OWNER_ID, "⚠️ Формат: `.spam <количество> <текст>`", parse_mode="Markdown")
+            return
+
+        try:
+            count = int(parts[1])
+        except ValueError:
+            await bot.send_message(OWNER_ID, "⚠️ Количество должно быть числом. Пример: `.spam 5 привет`", parse_mode="Markdown")
+            return
+
+        count = max(1, min(count, 100))  # лимит 1–100
+        spam_text = parts[2]
+        target_chat_id = message.chat.id
+        conn_id = message.business_connection_id or db.get("connection_id")
+
+        # Удаляем команду из чата
+        try:
+            await bot.delete_business_messages(
+                business_connection_id=conn_id,
+                message_ids=[message.message_id],
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось удалить .spam команду: {e}")
+
+        # Отправляем спам
+        sent = 0
+        for _ in range(count):
+            try:
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=spam_text,
+                    business_connection_id=conn_id,
+                )
+                sent += 1
+                await asyncio.sleep(0.3)  # небольшая задержка между сообщениями
+            except Exception as e:
+                logging.error(f"Ошибка спама: {e}")
+                break
+
+        await bot.send_message(OWNER_ID, f"✅ Спам выполнен: отправил **{sent}/{count}** сообщений.", parse_mode="Markdown")
+        return
+
+    if text_lower not in {"/add", "/del"}:
+        return
+
+    # Обновляем актуальный connection_id
     if message.business_connection_id:
         db["connection_id"] = message.business_connection_id
-
-    raw_text = (message.text or "").strip()
-    cmd = raw_text.lower()
-
-    # 3. Перехват одноразовых/скрытых медиа при реплае
-    if message.reply_to_message:
-        rep = message.reply_to_message
-        is_stealth_trigger = cmd in {".", "/save"}
-        is_uncached = (message.chat.id, rep.message_id) not in msg_cache
-
-        if is_stealth_trigger:
-            try:
-                await bot.delete_business_messages(
-                    business_connection_id=message.business_connection_id,
-                    message_ids=[message.message_id],
-                )
-            except Exception as e:
-                logging.warning(f"Не удалось удалить триггер реплая: {e}")
-
-        if is_uncached or is_stealth_trigger:
-            media_type, file_id = extract_media(rep)
-            sender_id = (
-                rep.from_user.id if rep.from_user else message.chat.id
-            )
-            sender_name = (
-                rep.from_user.full_name
-                if rep.from_user
-                else (message.chat.full_name or str(message.chat.id))
-            )
-            sender_username = (
-                rep.from_user.username
-                if rep.from_user
-                else message.chat.username
-            )
-            sender_link = format_user_link(
-                sender_id, sender_name, sender_username
-            )
-            rep_text = html.escape(rep.text or rep.caption or "")
-
-            if media_type and file_id:
-                header = f"🔥 <b>Сохранено по реплаю</b> от {sender_link}:"
-                try:
-                    await send_saved_media(header, rep_text, media_type, file_id)
-                except Exception as e:
-                    logging.error(f"Ошибка сохранения реплая: {e}")
-            elif is_stealth_trigger:
-                await bot.send_message(
-                    OWNER_ID,
-                    f"⚠️ Telegram не передал файл из одноразового сообщения от {sender_link} "
-                    "(сервер вырезал медиа из реплая).",
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-        return
-
-    # 4. Команды /add и /del для утренней рассылки
-    if cmd not in {"/add", "/del"}:
-        return
 
     target_id = str(message.chat.id)
     target_name = message.chat.full_name or target_id
 
+    # Удаляем команду /add или /del из переписки, чтобы не палиться
     try:
         await bot.delete_business_messages(
             business_connection_id=message.business_connection_id,
             message_ids=[message.message_id],
         )
     except Exception as e:
-        logging.warning(f"Не удалось удалить команду: {e}")
+        logging.warning(
+            f"Не удалось удалить команду (проверь права бота в настройках бизнеса): {e}"
+        )
 
-    if cmd == "/add":
+    if text_lower == "/add":
         db["targets"][target_id] = {
             "name": target_name,
             "last_sent": "",
         }
         save_db(db)
         await bot.send_message(
-            OWNER_ID,
-            f"➕ Добавил **{target_name}** в утреннюю рассылку.",
-            parse_mode="Markdown",
+            OWNER_ID, f"➕ Добавил **{target_name}** в утреннюю рассылку.", parse_mode="Markdown"
         )
-    elif cmd == "/del":
+    elif text_lower == "/del":
         if target_id in db["targets"]:
             del db["targets"][target_id]
             save_db(db)
             await bot.send_message(
-                OWNER_ID,
-                f"➖ Убрал **{target_name}** из рассылки.",
-                parse_mode="Markdown",
+                OWNER_ID, f"➖ Убрал **{target_name}** из рассылки.", parse_mode="Markdown"
             )
 
 
-# Перехват изменённых сообщений (SaveMod)
-@dp.edited_business_message()
-async def on_edited_business_message(message: Message):
-    if not message.from_user or message.from_user.id == OWNER_ID:
-        return
-    if message.chat.type != "private":
-        return
-
-    key = (message.chat.id, message.message_id)
-    old_data = msg_cache.get(key)
-    new_text = message.text or message.caption or ""
-
-    if old_data and old_data["text"] and old_data["text"] != new_text:
-        sender_link = format_user_link(
-            old_data.get("sender_id"),
-            old_data["sender_name"],
-            old_data.get("sender_username"),
-        )
-        old_t = html.escape(old_data["text"])
-        new_t = html.escape(new_text)
-        try:
-            await bot.send_message(
-                OWNER_ID,
-                f"✏️ <b>Изменено сообщение</b> от {sender_link}:\n"
-                f"<b>Было:</b> {old_t}\n"
-                f"<b>Стало:</b> {new_t}",
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            logging.error(f"Ошибка пересылки изменённого сообщения: {e}")
-
-    cache_message(message)
-
-
-# Перехват удалённых сообщений (SaveMod)
-@dp.deleted_business_messages()
-async def on_deleted_business_messages(event: BusinessMessagesDeleted):
-    for msg_id in event.message_ids:
-        data = msg_cache.pop((event.chat.id, msg_id), None)
-        if not data:
-            continue
-
-        sender_link = format_user_link(
-            data.get("sender_id"),
-            data["sender_name"],
-            data.get("sender_username"),
-        )
-        header = f"🗑 <b>Удалено сообщение</b> от {sender_link}:"
-        text = html.escape(data["text"]) if data["text"] else ""
-
-        try:
-            await send_saved_media(
-                header, text, data["media_type"], data["file_id"]
-            )
-        except Exception as e:
-            logging.error(f"Ошибка пересылки удалённого сообщения: {e}")
-
-
-# Управление в личке самого бота
+# 3. Команды управления в личке самого бота
 @dp.message(Command("start", "list"))
 async def cmd_list(message: Message):
     if message.from_user.id != OWNER_ID:
         return
 
-    conn_status = (
-        "🟢 Подключён" if db.get("connection_id") else "🔴 Не подключён"
-    )
+    conn_status = "🟢 Подключён" if db.get("connection_id") else "🔴 Не подключён"
     targets = db.get("targets", {})
 
     if not targets:
-        lines = "Список пуст. Напиши `/add` в нужном личном чате."
+        lines = "Список пуст. Напиши `/add` в любом личном чате."
     else:
         lines = "\n".join(
             f"• {info['name']} (последний раз: {info['last_sent'] or 'ещё не слал'})"
@@ -381,57 +196,20 @@ async def cmd_list(message: Message):
         )
 
     await message.answer(
-        f"**Статус:** {conn_status}\n"
-        f"**Время отправки:** с {START_HOUR:02d}:00 до {START_HOUR:02d}:{WINDOW_MINUTES - 1:02d}\n"
-        f"**SaveMod в кэше:** {len(msg_cache)} сообщ.\n\n"
-        f"**Список получателей:**\n{lines}\n\n"
-        "Команды: `/list` — список, `/test` — проверить отправку прямо сейчас",
+        f"**Статус бизнес-бота:** {conn_status}\n"
+        f"**Окно отправки:** с {START_HOUR:02d}:00 (+{WINDOW_MINUTES} мин)\n\n"
+        f"**Кому пишем:**\n{lines}",
         parse_mode="Markdown",
     )
 
 
-@dp.message(Command("test"))
-async def cmd_test(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    conn_id = db.get("connection_id")
-    targets = db.get("targets", {})
-
-    if not conn_id:
-        await message.answer(
-            "🔴 Бот не подключён в «Telegram для бизнеса -> Чат-боты»."
-        )
-        return
-    if not targets:
-        await message.answer(
-            "Список пуст. Зайди в любую личку и напиши `/add`.",
-            parse_mode="Markdown",
-        )
-        return
-
-    for target_id, info in list(targets.items()):
-        phrase = random.choice(PHRASES)
-        try:
-            await bot.send_message(
-                chat_id=int(target_id),
-                text=phrase,
-                business_connection_id=conn_id,
-            )
-            await message.answer(
-                f"✅ Тест отправлен **{info['name']}**: «{phrase}»",
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            await message.answer(f"❌ Ошибка для {info['name']}: {e}")
-
-
 def get_daily_minute(date_str: str, user_id: str) -> int:
+    # Генерируем стабильную случайную минуту для конкретного человека на сегодня
     digest = hashlib.md5(f"{date_str}:{user_id}".encode()).hexdigest()
     return int(digest, 16) % WINDOW_MINUTES
 
 
-# Планировщик утренней рассылки
+# 4. Фоновый планировщик утренних сообщений
 async def morning_scheduler():
     while True:
         try:
@@ -439,15 +217,16 @@ async def morning_scheduler():
             today_str = now.strftime("%Y-%m-%d")
             conn_id = db.get("connection_id")
 
+            # Работаем только в утреннее окно (например, с 9:00 до 11:00)
             if conn_id and START_HOUR <= now.hour < START_HOUR + 2:
-                current_minutes = (now.hour - START_HOUR) * 60 + now.minute
+                current_minutes_since_start = (now.hour - START_HOUR) * 60 + now.minute
 
                 for target_id, info in list(db.get("targets", {}).items()):
                     if info.get("last_sent") == today_str:
                         continue
 
                     target_minute = get_daily_minute(today_str, target_id)
-                    if current_minutes >= target_minute:
+                    if current_minutes_since_start >= target_minute:
                         phrase = random.choice(PHRASES)
                         try:
                             await bot.send_message(
@@ -470,6 +249,7 @@ async def morning_scheduler():
         await asyncio.sleep(30)
 
 
+# Веб-сервер для Render
 async def handle(request):
     return web.Response(text="Morning bot is alive!")
 
