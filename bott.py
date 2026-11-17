@@ -7,7 +7,7 @@ import os
 import random
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import BusinessConnection, Message
 from aiohttp import web
@@ -16,19 +16,18 @@ logging.basicConfig(level=logging.INFO)
 
 # --- НАСТРОЙКИ ---
 TOKEN = "9234797737:AAFzTG64sZX3KgkdMfIENlIazl-nFpzSjtE"
-OWNER_ID = 7450045362  # Твой Telegram ID
+OWNER_ID = 7450045362
 TIMEZONE = ZoneInfo("Europe/Kyiv")
 DB_FILE = "morning_db.json"
 
-# Окно отправки (например, с 9:00 до 9:59 утра)
-START_HOUR = 9
+# Окно отправки: с 07:00 до 07:59
+START_HOUR = 7
 WINDOW_MINUTES = 60
 
-# Варианты сообщений (добавляй свои)
 PHRASES = [
     "доброе утро, как спалось?",
-    "утра, выспался?",
-    "доброе как ты??",
+    "утречко",
+    "доброе, как самочуствие?",
     "доброе утро) как ты?",
     "привет, доброе утро, как спалось?",
 ]
@@ -58,7 +57,7 @@ def save_db(data: dict):
 db = load_db()
 
 
-# 1. Отслеживаем подключение/отключение бизнес-бота
+# Подключение / отключение бизнес-бота
 @dp.business_connection()
 async def on_business_connection(connection: BusinessConnection):
     if connection.user.id != OWNER_ID:
@@ -69,11 +68,11 @@ async def on_business_connection(connection: BusinessConnection):
         save_db(db)
         await bot.send_message(
             OWNER_ID,
-            "✅ Бизнес-бот успешно подключён!\n\n"
+            "✅ Бизнес-бот подключён!\n\n"
             "Заходи в личку к нужным людям и пиши:\n"
             "• `/add` — добавить в утреннюю рассылку\n"
             "• `/del` — убрать из рассылки\n\n"
-            "Команды сразу удалятся из чата, собеседник их не увидит.",
+            "Команды сразу удаляются из чата, собеседник их не увидит.",
             parse_mode="Markdown",
         )
     else:
@@ -84,10 +83,11 @@ async def on_business_connection(connection: BusinessConnection):
         )
 
 
-# 2. Ловим твои секретные команды /add и /del прямо в личных чатах
+# Секретные команды /add и /del в личных переписках
 @dp.business_message()
 async def on_business_message(message: Message):
-    # Реагируем только на твои собственные сообщения
+    if message.chat.type != "private":
+        return
     if not message.from_user or message.from_user.id != OWNER_ID:
         return
 
@@ -95,23 +95,20 @@ async def on_business_message(message: Message):
     if text not in {"/add", "/del"}:
         return
 
-    # Обновляем актуальный connection_id
     if message.business_connection_id:
         db["connection_id"] = message.business_connection_id
 
     target_id = str(message.chat.id)
     target_name = message.chat.full_name or target_id
 
-    # Удаляем команду /add или /del из переписки, чтобы не палиться
+    # Удаляем команду из чата
     try:
         await bot.delete_business_messages(
             business_connection_id=message.business_connection_id,
             message_ids=[message.message_id],
         )
     except Exception as e:
-        logging.warning(
-            f"Не удалось удалить команду (проверь права бота в настройках бизнеса): {e}"
-        )
+        logging.warning(f"Не удалось удалить команду: {e}")
 
     if text == "/add":
         db["targets"][target_id] = {
@@ -120,28 +117,34 @@ async def on_business_message(message: Message):
         }
         save_db(db)
         await bot.send_message(
-            OWNER_ID, f"➕ Добавил **{target_name}** в утреннюю рассылку.", parse_mode="Markdown"
+            OWNER_ID,
+            f"➕ Добавил **{target_name}** в утреннюю рассылку.",
+            parse_mode="Markdown",
         )
     elif text == "/del":
         if target_id in db["targets"]:
             del db["targets"][target_id]
             save_db(db)
             await bot.send_message(
-                OWNER_ID, f"➖ Убрал **{target_name}** из рассылки.", parse_mode="Markdown"
+                OWNER_ID,
+                f"➖ Убрал **{target_name}** из рассылки.",
+                parse_mode="Markdown",
             )
 
 
-# 3. Команды управления в личке самого бота
+# Управление в личке самого бота
 @dp.message(Command("start", "list"))
 async def cmd_list(message: Message):
     if message.from_user.id != OWNER_ID:
         return
 
-    conn_status = "🟢 Подключён" if db.get("connection_id") else "🔴 Не подключён"
+    conn_status = (
+        "🟢 Подключён" if db.get("connection_id") else "🔴 Не подключён"
+    )
     targets = db.get("targets", {})
 
     if not targets:
-        lines = "Список пуст. Напиши `/add` в любом личном чате."
+        lines = "Список пуст. Напиши `/add` в нужном личном чате."
     else:
         lines = "\n".join(
             f"• {info['name']} (последний раз: {info['last_sent'] or 'ещё не слал'})"
@@ -149,20 +152,56 @@ async def cmd_list(message: Message):
         )
 
     await message.answer(
-        f"**Статус бизнес-бота:** {conn_status}\n"
-        f"**Окно отправки:** с {START_HOUR:02d}:00 (+{WINDOW_MINUTES} мин)\n\n"
-        f"**Кому пишем:**\n{lines}",
+        f"**Статус:** {conn_status}\n"
+        f"**Время отправки:** с {START_HOUR:02d}:00 до {START_HOUR:02d}:{WINDOW_MINUTES - 1:02d}\n\n"
+        f"**Список получателей:**\n{lines}\n\n"
+        "Команды: `/list` — список, `/test` — проверить отправку прямо сейчас",
         parse_mode="Markdown",
     )
 
 
+@dp.message(Command("test"))
+async def cmd_test(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    conn_id = db.get("connection_id")
+    targets = db.get("targets", {})
+
+    if not conn_id:
+        await message.answer(
+            "🔴 Бот не подключён в «Telegram для бизнеса -> Чат-боты»."
+        )
+        return
+    if not targets:
+        await message.answer(
+            "Список пуст. Зайди в любую личку и напиши `/add`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    for target_id, info in list(targets.items()):
+        phrase = random.choice(PHRASES)
+        try:
+            await bot.send_message(
+                chat_id=int(target_id),
+                text=phrase,
+                business_connection_id=conn_id,
+            )
+            await message.answer(
+                f"✅ Тест отправлен **{info['name']}**: «{phrase}»",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            await message.answer(f"❌ Ошибка для {info['name']}: {e}")
+
+
 def get_daily_minute(date_str: str, user_id: str) -> int:
-    # Генерируем стабильную случайную минуту для конкретного человека на сегодня
     digest = hashlib.md5(f"{date_str}:{user_id}".encode()).hexdigest()
     return int(digest, 16) % WINDOW_MINUTES
 
 
-# 4. Фоновый планировщик утренних сообщений
+# Планировщик утренней рассылки
 async def morning_scheduler():
     while True:
         try:
@@ -170,16 +209,15 @@ async def morning_scheduler():
             today_str = now.strftime("%Y-%m-%d")
             conn_id = db.get("connection_id")
 
-            # Работаем только в утреннее окно (например, с 9:00 до 11:00)
             if conn_id and START_HOUR <= now.hour < START_HOUR + 2:
-                current_minutes_since_start = (now.hour - START_HOUR) * 60 + now.minute
+                current_minutes = (now.hour - START_HOUR) * 60 + now.minute
 
                 for target_id, info in list(db.get("targets", {}).items()):
                     if info.get("last_sent") == today_str:
                         continue
 
                     target_minute = get_daily_minute(today_str, target_id)
-                    if current_minutes_since_start >= target_minute:
+                    if current_minutes >= target_minute:
                         phrase = random.choice(PHRASES)
                         try:
                             await bot.send_message(
@@ -202,7 +240,6 @@ async def morning_scheduler():
         await asyncio.sleep(30)
 
 
-# Веб-сервер для Render
 async def handle(request):
     return web.Response(text="Morning bot is alive!")
 
