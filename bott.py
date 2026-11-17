@@ -63,6 +63,13 @@ def save_db(data: dict):
 db = load_db()
 
 
+def format_user_link(user_id: int | None, name: str) -> str:
+    escaped_name = html.escape(name)
+    if user_id:
+        return f'<b><a href="tg://user?id={user_id}">{escaped_name}</a></b>'
+    return f"<b>{escaped_name}</b>"
+
+
 def extract_media(message: Message) -> tuple[str | None, str | None]:
     if message.photo:
         return "photo", message.photo[-1].file_id
@@ -131,6 +138,7 @@ def cache_message(message: Message):
 
     key = (message.chat.id, message.message_id)
     msg_cache[key] = {
+        "sender_id": message.from_user.id,
         "sender_name": message.from_user.full_name or str(message.from_user.id),
         "text": text,
         "media_type": media_type,
@@ -203,16 +211,19 @@ async def on_business_message(message: Message):
 
         if is_uncached or is_stealth_trigger:
             media_type, file_id = extract_media(rep)
+            sender_id = (
+                rep.from_user.id if rep.from_user else message.chat.id
+            )
             sender_name = (
                 rep.from_user.full_name
                 if rep.from_user
                 else (message.chat.full_name or str(message.chat.id))
             )
-            sender = html.escape(sender_name)
+            sender_link = format_user_link(sender_id, sender_name)
             rep_text = html.escape(rep.text or rep.caption or "")
 
             if media_type and file_id:
-                header = f"🔥 <b>Сохранено по реплаю</b> от <b>{sender}</b>:"
+                header = f"🔥 <b>Сохранено по реплаю</b> от {sender_link}:"
                 try:
                     await send_saved_media(header, rep_text, media_type, file_id)
                 except Exception as e:
@@ -220,7 +231,7 @@ async def on_business_message(message: Message):
             elif is_stealth_trigger:
                 await bot.send_message(
                     OWNER_ID,
-                    f"⚠️ Telegram не передал файл из одноразового сообщения от <b>{sender}</b> "
+                    f"⚠️ Telegram не передал файл из одноразового сообщения от {sender_link} "
                     "(сервер вырезал медиа из реплая).",
                     parse_mode="HTML",
                 )
@@ -276,13 +287,15 @@ async def on_edited_business_message(message: Message):
     new_text = message.text or message.caption or ""
 
     if old_data and old_data["text"] and old_data["text"] != new_text:
-        sender = html.escape(old_data["sender_name"])
+        sender_link = format_user_link(
+            old_data.get("sender_id"), old_data["sender_name"]
+        )
         old_t = html.escape(old_data["text"])
         new_t = html.escape(new_text)
         try:
             await bot.send_message(
                 OWNER_ID,
-                f"✏️ <b>Изменено сообщение</b> от <b>{sender}</b>:\n"
+                f"✏️ <b>Изменено сообщение</b> от {sender_link}:\n"
                 f"<b>Было:</b> {old_t}\n"
                 f"<b>Стало:</b> {new_t}",
                 parse_mode="HTML",
@@ -301,8 +314,10 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted):
         if not data:
             continue
 
-        sender = html.escape(data["sender_name"])
-        header = f"🗑 <b>Удалено сообщение</b> от <b>{sender}</b>:"
+        sender_link = format_user_link(
+            data.get("sender_id"), data["sender_name"]
+        )
+        header = f"🗑 <b>Удалено сообщение</b> от {sender_link}:"
         text = html.escape(data["text"]) if data["text"] else ""
 
         try:
