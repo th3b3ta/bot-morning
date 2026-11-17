@@ -63,8 +63,12 @@ def save_db(data: dict):
 db = load_db()
 
 
-def format_user_link(user_id: int | None, name: str) -> str:
+def format_user_link(
+    user_id: int | None, name: str, username: str | None = None
+) -> str:
     escaped_name = html.escape(name)
+    if username:
+        return f'<b><a href="https://t.me/{username}">{escaped_name}</a></b>'
     if user_id:
         return f'<b><a href="tg://user?id={user_id}">{escaped_name}</a></b>'
     return f"<b>{escaped_name}</b>"
@@ -92,7 +96,12 @@ async def send_saved_media(
     header: str, text: str, media_type: str | None, file_id: str | None
 ):
     if not media_type or not file_id:
-        await bot.send_message(OWNER_ID, f"{header}\n{text}", parse_mode="HTML")
+        await bot.send_message(
+            OWNER_ID,
+            f"{header}\n{text}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         return
 
     caption = f"{header}\n{text}" if text else header
@@ -118,10 +127,20 @@ async def send_saved_media(
             OWNER_ID, file_id, caption=caption, parse_mode="HTML"
         )
     elif media_type == "video_note":
-        await bot.send_message(OWNER_ID, header, parse_mode="HTML")
+        await bot.send_message(
+            OWNER_ID,
+            header,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         await bot.send_video_note(OWNER_ID, file_id)
     elif media_type == "sticker":
-        await bot.send_message(OWNER_ID, header, parse_mode="HTML")
+        await bot.send_message(
+            OWNER_ID,
+            header,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         await bot.send_sticker(OWNER_ID, file_id)
 
 
@@ -140,6 +159,7 @@ def cache_message(message: Message):
     msg_cache[key] = {
         "sender_id": message.from_user.id,
         "sender_name": message.from_user.full_name or str(message.from_user.id),
+        "sender_username": message.from_user.username,
         "text": text,
         "media_type": media_type,
         "file_id": file_id,
@@ -219,7 +239,14 @@ async def on_business_message(message: Message):
                 if rep.from_user
                 else (message.chat.full_name or str(message.chat.id))
             )
-            sender_link = format_user_link(sender_id, sender_name)
+            sender_username = (
+                rep.from_user.username
+                if rep.from_user
+                else message.chat.username
+            )
+            sender_link = format_user_link(
+                sender_id, sender_name, sender_username
+            )
             rep_text = html.escape(rep.text or rep.caption or "")
 
             if media_type and file_id:
@@ -234,6 +261,7 @@ async def on_business_message(message: Message):
                     f"⚠️ Telegram не передал файл из одноразового сообщения от {sender_link} "
                     "(сервер вырезал медиа из реплая).",
                     parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
         return
 
@@ -288,7 +316,9 @@ async def on_edited_business_message(message: Message):
 
     if old_data and old_data["text"] and old_data["text"] != new_text:
         sender_link = format_user_link(
-            old_data.get("sender_id"), old_data["sender_name"]
+            old_data.get("sender_id"),
+            old_data["sender_name"],
+            old_data.get("sender_username"),
         )
         old_t = html.escape(old_data["text"])
         new_t = html.escape(new_text)
@@ -299,6 +329,7 @@ async def on_edited_business_message(message: Message):
                 f"<b>Было:</b> {old_t}\n"
                 f"<b>Стало:</b> {new_t}",
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         except Exception as e:
             logging.error(f"Ошибка пересылки изменённого сообщения: {e}")
@@ -315,7 +346,9 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted):
             continue
 
         sender_link = format_user_link(
-            data.get("sender_id"), data["sender_name"]
+            data.get("sender_id"),
+            data["sender_name"],
+            data.get("sender_username"),
         )
         header = f"🗑 <b>Удалено сообщение</b> от {sender_link}:"
         text = html.escape(data["text"]) if data["text"] else ""
