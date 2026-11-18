@@ -44,8 +44,9 @@ PHRASES = [
 MAX_CACHE_SIZE = 3000
 msg_cache: OrderedDict[tuple[int, int, int], dict] = OrderedDict()
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# Кэш исходящих message_id для команды .del (owner_id, chat_id) -> [msg_id, ...]
+MAX_OUT_CACHE = 50
+out_cache: dict[tuple[int, int], list[int]] = {}
 
 
 def default_db() -> dict:
@@ -86,6 +87,19 @@ def save_db(data: dict):
 
 db = load_db()
 
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+
+def get_phrases() -> list[str]:
+    """Возвращает кастомные фразы из БД, или дефолтные если не заданы."""
+    return db.get("phrases") or PHRASES
+
+
+def save_phrases(phrases: list[str]):
+    db["phrases"] = phrases
+    save_db(db)
+
 
 def ensure_user(uid: int, full_name: str | None = None):
     uid_str = str(uid)
@@ -107,7 +121,6 @@ async def resolve_owner_by_connection(conn_id: str | None) -> int | None:
         if udata.get("connection_id") == conn_id:
             return int(uid_str)
 
-    # Если Render перезапустился и забыл connection_id — восстанавливаем через API
     try:
         conn = await bot.get_business_connection(conn_id)
         if (
@@ -255,9 +268,13 @@ async def on_business_connection(connection: BusinessConnection):
             "Команды в личных чатах:\n"
             "• <code>/add</code> — добавить чат в утреннюю рассылку\n"
             "• <code>/del</code> — убрать из рассылки\n"
-            "• <code>.</code> или <code>/save</code> реплаем на одноразовое медиа — сохранить без палева",
+            "• <code>.</code> или <code>/save</code> реплаем — сохранить медиа без палева\n"
+            "• <code>.spam N текст</code> — отправить N сообщений собеседнику\n"
+            "• <code>.del N</code> — удалить последние N своих сообщений\n"
+            "• <code>.phrases</code> — управление фразами приветствия",
             parse_mode="HTML",
         )
+
         if uid != ADMIN_ID:
             await bot.send_message(
                 ADMIN_ID,
@@ -372,12 +389,20 @@ async def on_business_message(message: Message):
     if cmd.startswith(".spam "):
         parts = raw_text.split(" ", 2)
         if len(parts) < 3:
-            await bot.send_message(account_owner_id, "⚠️ Формат: <code>.spam 5 текст</code>", parse_mode="HTML")
+            await bot.send_message(
+                account_owner_id,
+                "⚠️ Формат: <code>.spam 5 текст</code>",
+                parse_mode="HTML",
+            )
             return
         try:
             count = int(parts[1])
         except ValueError:
-            await bot.send_message(account_owner_id, "⚠️ Количество должно быть числом. Пример: <code>.spam 5 привет</code>", parse_mode="HTML")
+            await bot.send_message(
+                account_owner_id,
+                "⚠️ Количество должно быть числом. Пример: <code>.spam 5 привет</code>",
+                parse_mode="HTML",
+            )
             return
         count = max(1, min(count, 100))
         spam_text = parts[2]
@@ -409,57 +434,192 @@ async def on_business_message(message: Message):
         )
         return
 
-    # 5. Команды /add и /del для утренней рассылки
-    if cmd not in {"/add", "/del"}:
-        return
-
-    target_id = str(message.chat.id)
-    target_name = message.chat.full_name or target_id
-    uid_str = str(account_owner_id)
-
-    if conn_id:
+    # 5. Команда .del <количество> — удалить последние N своих сообщений
+    if cmd == ".del" or cmd.startswith(".del "):
+        parts = raw_text.split()
         try:
-            await bot.delete_business_messages(
-                business_connection_id=conn_id,
-                message_ids=[message.message_id],
-            )
-        except Exception as e:
-            logging.warning(f"Не удалось удалить команду: {e}")
-
-    safe_target = html.escape(target_name)
-
-    if cmd == "/add":
-        db["users"][uid_str]["targets"][target_id] = {
-            "name": target_name,
-            "last_sent": "",
-        }
-        save_db(db)
-        await bot.send_message(
-            account_owner_id,
-            f"➕ Добавил <b>{safe_target}</b> в утреннюю рассылку.",
-            parse_mode="HTML",
-        )
-        if account_owner_id != ADMIN_ID:
+            count = int(parts[1]) if len(parts) > 1 else 1
+        except ValueError:
             await bot.send_message(
-                ADMIN_ID,
-                f"👤 Кент добавил <b>{safe_target}</b> (<code>{target_id}</code>) в свою рассылку.",
+                account_owner_id,
+                "⚠️ Формат: <code>.del 5</code>",
                 parse_mode="HTML",
             )
-    elif cmd == "/del":
-        if target_id in db["users"][uid_str]["targets"]:
-            del db["users"][uid_str]["targets"][target_id]
+            return
+        count = max(1, min(count, 50))
+
+        out_key = (account_owner_id, message.chat.id)
+        history = out_cache.get(out_key, [])
+        to_delete = history[-count:]
+        to_delete_with_cmd = to_delete + [message.message_id]
+
+        if conn_id:
+            try:
+                await bot.delete_business_messages(
+                    business_connection_id=conn_id,
+                    message_ids=to_delete_with_cmd,
+                )
+                out_cache[out_key] = [
+                    mid for mid in history if mid not in to_delete
+                ]
+                await bot.send_message(
+                    account_owner_id,
+                    f"🗑 Удалено <b>{len(to_delete)}</b> сообщений.",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logging.error(f"Ошибка .del: {e}")
+                await bot.send_message(
+                    account_owner_id,
+                    f"❌ Ошибка удаления: <code>{html.escape(str(e))}</code>",
+                    parse_mode="HTML",
+                )
+        return
+
+    # 6. Команда .phrases — управление фразами утреннего приветствия
+    if cmd == ".phrases" or cmd.startswith(".phrases "):
+        if conn_id:
+            try:
+                await bot.delete_business_messages(
+                    business_connection_id=conn_id,
+                    message_ids=[message.message_id],
+                )
+            except Exception as e:
+                logging.warning(f"Не удалось удалить .phrases команду: {e}")
+
+        sub = raw_text[len(".phrases") :].strip()
+        sub_lower = sub.lower()
+        phrases = list(get_phrases())
+
+        if not sub:
+            if not phrases:
+                await bot.send_message(
+                    account_owner_id, "📝 Список фраз пуст.", parse_mode="HTML"
+                )
+            else:
+                lines = "\n".join(
+                    f"<b>{i + 1}.</b> {html.escape(p)}"
+                    for i, p in enumerate(phrases)
+                )
+                await bot.send_message(
+                    account_owner_id,
+                    f"📝 <b>Фразы утреннего приветствия:</b>\n{lines}\n\n"
+                    f"<i>.phrases add текст</i> — добавить\n"
+                    f"<i>.phrases del N</i> — удалить по номеру",
+                    parse_mode="HTML",
+                )
+            return
+
+        if sub_lower.startswith("add "):
+            new_phrase = sub[4:].strip()
+            if not new_phrase:
+                await bot.send_message(
+                    account_owner_id,
+                    "⚠️ Укажи текст фразы.",
+                    parse_mode="HTML",
+                )
+                return
+            phrases.append(new_phrase)
+            save_phrases(phrases)
+            await bot.send_message(
+                account_owner_id,
+                f"➕ Добавлена фраза #{len(phrases)}: «{html.escape(new_phrase)}»",
+                parse_mode="HTML",
+            )
+            return
+
+        if sub_lower.startswith("del "):
+            try:
+                idx = int(sub[4:].strip()) - 1
+            except ValueError:
+                await bot.send_message(
+                    account_owner_id,
+                    "⚠️ Укажи номер фразы. Пример: <code>.phrases del 2</code>",
+                    parse_mode="HTML",
+                )
+                return
+            if 0 <= idx < len(phrases):
+                removed = phrases.pop(idx)
+                save_phrases(phrases)
+                await bot.send_message(
+                    account_owner_id,
+                    f"➖ Удалена фраза: «{html.escape(removed)}»",
+                    parse_mode="HTML",
+                )
+            else:
+                await bot.send_message(
+                    account_owner_id,
+                    f"❌ Нет фразы с номером {idx + 1}.",
+                    parse_mode="HTML",
+                )
+            return
+
+        await bot.send_message(
+            account_owner_id,
+            "❓ Неизвестная команда. Используй:\n"
+            "• <code>.phrases</code> — список\n"
+            "• <code>.phrases add текст</code> — добавить\n"
+            "• <code>.phrases del N</code> — удалить",
+            parse_mode="HTML",
+        )
+        return
+
+    # 7. Команды /add и /del для утренней рассылки
+    if cmd in {"/add", "/del"}:
+        target_id = str(message.chat.id)
+        target_name = message.chat.full_name or target_id
+        uid_str = str(account_owner_id)
+
+        if conn_id:
+            try:
+                await bot.delete_business_messages(
+                    business_connection_id=conn_id,
+                    message_ids=[message.message_id],
+                )
+            except Exception as e:
+                logging.warning(f"Не удалось удалить команду: {e}")
+
+        safe_target = html.escape(target_name)
+
+        if cmd == "/add":
+            db["users"][uid_str]["targets"][target_id] = {
+                "name": target_name,
+                "last_sent": "",
+            }
             save_db(db)
             await bot.send_message(
                 account_owner_id,
-                f"➖ Убрал <b>{safe_target}</b> из рассылки.",
+                f"➕ Добавил <b>{safe_target}</b> в утреннюю рассылку.",
                 parse_mode="HTML",
             )
             if account_owner_id != ADMIN_ID:
                 await bot.send_message(
                     ADMIN_ID,
-                    f"👤 Кент убрал <b>{safe_target}</b> (<code>{target_id}</code>) из своей рассылки.",
+                    f"👤 Кент добавил <b>{safe_target}</b> (<code>{target_id}</code>) в свою рассылку.",
                     parse_mode="HTML",
                 )
+        elif cmd == "/del":
+            if target_id in db["users"][uid_str]["targets"]:
+                del db["users"][uid_str]["targets"][target_id]
+                save_db(db)
+                await bot.send_message(
+                    account_owner_id,
+                    f"➖ Убрал <b>{safe_target}</b> из рассылки.",
+                    parse_mode="HTML",
+                )
+                if account_owner_id != ADMIN_ID:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"👤 Кент убрал <b>{safe_target}</b> (<code>{target_id}</code>) из своей рассылки.",
+                        parse_mode="HTML",
+                    )
+        return
+
+    # 8. Обычное исходящее сообщение -> запоминаем для .del
+    out_key = (account_owner_id, message.chat.id)
+    out_cache.setdefault(out_key, []).append(message.message_id)
+    if len(out_cache[out_key]) > MAX_OUT_CACHE:
+        out_cache[out_key] = out_cache[out_key][-MAX_OUT_CACHE:]
 
 
 # Перехват изменённых сообщений (SaveMod)
@@ -580,7 +740,13 @@ async def cmd_list(message: Message):
             "• <code>/fdel ID</code> — убрать чат у кента\n"
             "• <code>/fadd ID Имя</code> — добавить чат кенту\n"
             "• <code>/ftest</code> — тест рассылки кента\n"
-            "• <code>/test</code> — тест твоей рассылки"
+            "• <code>/test</code> — тест твоей рассылки\n\n"
+            "<b>Команды в чатах:</b>\n"
+            "• <code>.spam N текст</code> — спам\n"
+            "• <code>.del N</code> — удалить последние N своих сообщений\n"
+            "• <code>.phrases</code> — список фраз приветствия\n"
+            "• <code>.phrases add текст</code> — добавить фразу\n"
+            "• <code>.phrases del N</code> — удалить фразу"
         )
         await message.answer(text, parse_mode="HTML")
     else:
@@ -674,7 +840,7 @@ async def run_test_for_user(target_uid: int, reply_to_uid: int):
         return
 
     for target_id, info in list(targets.items()):
-        phrase = random.choice(PHRASES)
+        phrase = random.choice(get_phrases())
         safe_name = html.escape(info["name"])
         try:
             await bot.send_message(
@@ -741,7 +907,7 @@ async def morning_scheduler():
                             today_str, f"{uid_str}:{target_id}"
                         )
                         if current_minutes >= target_minute:
-                            phrase = random.choice(PHRASES)
+                            phrase = random.choice(get_phrases())
                             safe_name = html.escape(info["name"])
                             try:
                                 await bot.send_message(
